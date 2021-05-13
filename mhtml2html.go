@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,24 +44,22 @@ type file struct {
 	converted   bool
 }
 
-
 type arrayFlags []string
 
 func (f *arrayFlags) String() string {
-    return fmt.Sprint([]string(*f))
+	return fmt.Sprint([]string(*f))
 }
 
 func (f *arrayFlags) Set(value string) error {
-    *f = append(*f, value)
-    return nil
+	*f = append(*f, value)
+	return nil
 }
 
-
 var (
-	browsing = flag.Bool("b", false, "optional: browsing result(default: false, ouput to stdout)") 
+	browsing             = flag.Bool("b", false, "optional: browsing result(default: false, ouput to stdout)")
 	removingElementArray arrayFlags //option: jquery like elements selectors to be removed
-	removingAttrArray arrayFlags //option: pairs of jquery like elements selector and attribute to be removed
-	needMinify = flag.Bool("m", false, "optional: need minify output(default: false)") 
+	removingAttrArray    arrayFlags //option: pairs of jquery like elements selector and attribute to be removed
+	needMinify           = flag.Bool("m", false, "optional: need minify output(default: false)")
 
 	rWithProto = regexp.MustCompile("^[a-z]+:")
 	rURL       = regexp.MustCompile(`\burl\(([^()]+)\)`)
@@ -93,13 +92,13 @@ func modifyCSS(base *url.URL, data []byte) []byte {
 			cid := strings.TrimPrefix(u, "cid:")
 			u = cid2loc[cid]
 		}
-        // try to embed resource in CSS 
-        if f, ok := files[u]; ok {
-            u =  base64.StdEncoding.EncodeToString(f.data)
-            u =  "url(data:" + f.contentType + ";base64," + u + ")"
-        } else {
-		    u = "url(/" + url.PathEscape(abs(base, u)) + ")"
-        }
+		// try to embed resource in CSS
+		if f, ok := files[u]; ok {
+			u = base64.StdEncoding.EncodeToString(f.data)
+			u = "url(data:" + f.contentType + ";base64," + u + ")"
+		} else {
+			u = "url(/" + url.PathEscape(abs(base, u)) + ")"
+		}
 		return []byte(u)
 	})
 }
@@ -119,12 +118,12 @@ func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
 	// remove attributes
 	var sel, attr string
 	for i, item := range removingAttrArray {
-		if i % 2 == 0 {
-			sel = item 
+		if i%2 == 0 {
+			sel = item
 		} else {
-			attr = item 
+			attr = item
 		}
-		if i % 2 == 1 {
+		if i%2 == 1 {
 			el := d.Find(sel)
 			//fmt.Fprintf(os.Stderr, "DEUBG: try to remove attr %s[%s] from: %s \n", sel, attr, el.Nodes)
 			if _, ok := el.Attr(attr); ok {
@@ -172,14 +171,14 @@ func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
 				v = cid2loc[cid]
 			}
 
-            // try to embed resource in HTML
-            if f, ok := files[v]; ok {
-                v =  "data:" + f.contentType + ";base64," + base64.StdEncoding.EncodeToString(f.data)
-			    sel.SetAttr(attr, v)
-            } else {
-			    v = abs(base, v)
-			    sel.SetAttr(attr, "/"+url.PathEscape(v))
-            }
+			// try to embed resource in HTML
+			if f, ok := files[v]; ok {
+				v = "data:" + f.contentType + ";base64," + base64.StdEncoding.EncodeToString(f.data)
+				sel.SetAttr(attr, v)
+			} else {
+				v = abs(base, v)
+				sel.SetAttr(attr, "/"+url.PathEscape(v))
+			}
 
 			sel.RemoveAttr("integrity")
 		})
@@ -214,7 +213,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		found := false
 		lower := strings.ToLower(url)
-		for k, f2:= range files {
+		for k, f2 := range files {
 			if strings.ToLower(k) == lower {
 				found = true
 				f = f2
@@ -233,7 +232,133 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Length", fmt.Sprint(len(f.data)))
 	w.Write(f.data)
 
-    //fmt.println(os.Stderr, "DEBUG GET: ", url, " Content-Type: ", f.contentType, "Content-Length: ", len(f.data))
+	//fmt.println(os.Stderr, "DEBUG GET: ", url, " Content-Type: ", f.contentType, "Content-Length: ", len(f.data))
+}
+
+func ConvertMht2HTML(mht string) (string, error) {
+	f, err := os.Open(mht)
+	if err != nil {
+		return "", err
+	}
+	msg, err := mail.ReadMessage(f)
+	if err != nil {
+		return "", err
+	}
+
+	_, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	boundary := params["boundary"]
+	if err != nil {
+		return "", err
+	}
+
+	var minifier *minify.M
+	if *needMinify {
+		minifier = minify.New()
+		minifier.AddFunc("text/css", css.Minify)
+		minifier.AddFunc("text/html", html.Minify)
+		minifier.AddFunc("image/svg+xml", svg.Minify)
+		minifier.AddFuncRegexp(regexp.MustCompile("^(application|text)/(x-)?(java|ecma)script$"), js.Minify)
+		minifier.AddFuncRegexp(regexp.MustCompile("[/+]json$"), json.Minify)
+		minifier.AddFuncRegexp(regexp.MustCompile("[/+]xml$"), xml.Minify)
+	}
+
+	mpr := multipart.NewReader(msg.Body, boundary)
+	initialLoc := ""
+	for {
+		part, err := mpr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+
+		contentLocation := part.Header.Get("Content-Location")
+		base, err := url.Parse(contentLocation)
+		if err != nil {
+			return "", err
+		}
+
+		data, err := ioutil.ReadAll(part)
+		if err != nil {
+			return "", err
+		}
+
+		if part.Header.Get("Content-Transfer-Encoding") == "base64" {
+			n := base64.StdEncoding.DecodedLen(len(data))
+			buf := make([]byte, n)
+			n, err := base64.StdEncoding.Decode(buf, data)
+			if err != nil {
+				return "", err
+			}
+			data = buf[:n]
+		}
+
+		if cid := part.Header.Get("Content-ID"); cid != "" {
+			cid = strings.Trim(cid, "<>")
+			cid2loc[cid] = contentLocation
+		}
+
+		// NOTE: no space and double quotation permitted in contenType of CSS url base64 encoding data
+		contentType := part.Header.Get("Content-Type")
+		contentType = strings.Replace(contentType, "\"", "", -1)
+		contentType = strings.Replace(contentType, "'", "", -1)
+		contentType = strings.Replace(contentType, " ", "", -1)
+		initial := false
+		if initialLoc == "" && (contentType == "text/html" || strings.HasPrefix(contentType, "text/html;")) {
+			initialLoc = contentLocation
+			initial = true
+		}
+
+		if *needMinify {
+			out := buffer.NewWriter(make([]byte, 0, len(data)))
+			if err := minifier.Minify(strings.Split(contentType, ";")[0], out, buffer.NewReader(data)); err == nil {
+				data = out.Bytes()
+			} else {
+				//fmt.Fprintf(os.Stderr, "DEBUG: failed to miniy %s %s. Reason: %s \n", contentType, contentLocation, err)
+			}
+		}
+
+		files[contentLocation] = &file{contentType, base, data, initial, false}
+	}
+
+	if initialLoc == "" {
+		return "", errors.New("initialLoc is empty")
+	}
+
+	for _, f := range files {
+		if ct := f.contentType; ct == "text/css" {
+			f.data = modifyCSS(f.base, f.data)
+		}
+	}
+	for _, f := range files {
+		if ct := f.contentType; ct == "text/html" || strings.HasPrefix(ct, "text/html;") {
+			encoding, name, certain := charset.DetermineEncoding(f.data, f.contentType)
+			if name != "utf-8" && !(name == "windows-1252" && !certain) {
+				decoded, err := encoding.NewDecoder().Bytes(f.data)
+				if err != nil {
+					return "", err
+				}
+				f.data = decoded
+				if strings.Contains(f.contentType, ";") {
+					f.contentType = strings.SplitN(f.contentType, ";", 2)[0]
+				}
+				f.converted = true
+			}
+			f.data, err = modifyHTML(f.base, f.data, f.converted)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	var buf bytes.Buffer
+	for _, f := range files {
+		if ct := f.contentType; ct == "text/html" || strings.HasPrefix(ct, "text/html;") {
+			buf.Write(f.data)
+		}
+	}
+	return buf.String(), nil
+
 }
 
 func main() {
@@ -245,7 +370,7 @@ func main() {
 	flag.Var(&removingElementArray, "re", "repeatablely optional: jquery like elements selector to be removed")
 	flag.Var(&removingAttrArray, "ra", "repeatablely optional: pairs of jquery like elements selector and attribute to be removed")
 	flag.Parse()
-	if (flag.NArg() != 1) || (len(removingAttrArray) % 2 != 0) {
+	if (flag.NArg() != 1) || (len(removingAttrArray)%2 != 0) {
 		flag.Usage()
 		os.Exit(0)
 	}
@@ -329,7 +454,7 @@ func main() {
 			out := buffer.NewWriter(make([]byte, 0, len(data)))
 			if err := minifier.Minify(strings.Split(contentType, ";")[0], out, buffer.NewReader(data)); err == nil {
 				data = out.Bytes()
-			}  else {
+			} else {
 				//fmt.Fprintf(os.Stderr, "DEBUG: failed to miniy %s %s. Reason: %s \n", contentType, contentLocation, err)
 			}
 		}
@@ -344,8 +469,8 @@ func main() {
 	for _, f := range files {
 		if ct := f.contentType; ct == "text/css" {
 			f.data = modifyCSS(f.base, f.data)
-        }
-    }
+		}
+	}
 	for _, f := range files {
 		if ct := f.contentType; ct == "text/html" || strings.HasPrefix(ct, "text/html;") {
 			encoding, name, certain := charset.DetermineEncoding(f.data, f.contentType)
@@ -368,23 +493,22 @@ func main() {
 		}
 	}
 
-    if *browsing {
-	    srv := httptest.NewServer(http.HandlerFunc(handler))
-	    initialURL := srv.URL + "/" + url.PathEscape(initialLoc)
-	    if err := browser.OpenURL(initialURL); err != nil {
-			fmt.Fprintf(os.Stderr, "Couldn't start browser:", err)
-            fmt.Fprintf(os.Stderr, "Open the following URL manually:", initialURL)
-	    } else {
-            fmt.Fprintf(os.Stderr, "Browsing: %s", initialURL)
-        }
+	if *browsing {
+		srv := httptest.NewServer(http.HandlerFunc(handler))
+		initialURL := srv.URL + "/" + url.PathEscape(initialLoc)
+		if err := browser.OpenURL(initialURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Couldn't start browser:%v", err)
+			fmt.Fprintf(os.Stderr, "Open the following URL manually:%v", initialURL)
+		} else {
+			fmt.Fprintf(os.Stderr, "Browsing: %s", initialURL)
+		}
 
-	    select {}
-    } else {
-	    for _, f := range files {
-		    if ct := f.contentType; ct == "text/html" || strings.HasPrefix(ct, "text/html;") {
-                os.Stdout.Write(f.data)
-            }
-        }
-    }
+		select {}
+	} else {
+		for _, f := range files {
+			if ct := f.contentType; ct == "text/html" || strings.HasPrefix(ct, "text/html;") {
+				os.Stdout.Write(f.data)
+			}
+		}
+	}
 }
-
