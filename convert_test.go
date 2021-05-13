@@ -1,4 +1,4 @@
-package main
+package mhtml2html
 
 import "testing"
 
