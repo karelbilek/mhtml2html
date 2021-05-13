@@ -1,4 +1,4 @@
-module github.com/dingqiangliu/mhtml2html
+module github.com/walkmiao/mhtml2html
 
 go 1.15
 
