@@ -232,12 +232,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	//fmt.println(os.Stderr, "DEBUG GET: ", url, " Content-Type: ", f.contentType, "Content-Length: ", len(f.data))
 }
 
-func ConvertMht2HTML(mht string) (string, error) {
-	f, err := os.Open(mht)
-	if err != nil {
-		return "", err
+func ConvertMht2HTML(path string, raw string) (string, error) {
+	var r io.Reader
+	if path != "" {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		r = f
+	} else {
+		r = strings.NewReader(raw)
 	}
-	msg, err := mail.ReadMessage(f)
+	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return "", err
 	}
