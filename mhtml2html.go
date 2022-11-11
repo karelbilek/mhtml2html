@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 	"mime"
 	"mime/multipart"
-	"net/http"
 	"net/mail"
 	"net/url"
 	"os"
@@ -60,9 +59,6 @@ var (
 
 	rWithProto = regexp.MustCompile("^[a-z]+:")
 	rURL       = regexp.MustCompile(`\burl\(([^()]+)\)`)
-
-	files   = make(map[string]*file)
-	cid2loc = make(map[string]string)
 )
 
 func abs(base *url.URL, url string) string {
@@ -78,7 +74,7 @@ func abs(base *url.URL, url string) string {
 	return base.Scheme + "://" + base.Host + path.Join("/", path.Dir(base.Path), url)
 }
 
-func modifyCSS(base *url.URL, data []byte) []byte {
+func modifyCSS(cid2loc map[string]string, files map[string]*file, base *url.URL, data []byte) []byte {
 	return rURL.ReplaceAllFunc(data, func(d []byte) []byte {
 		u := string(d[4 : len(d)-1])
 		u = strings.Trim(u, `"'`)
@@ -100,7 +96,7 @@ func modifyCSS(base *url.URL, data []byte) []byte {
 	})
 }
 
-func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
+func modifyHTML(cid2loc map[string]string, files map[string]*file, base *url.URL, data []byte, converted bool) ([]byte, error) {
 	d, err := goquery.NewDocumentFromReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -185,7 +181,7 @@ func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
 		if !strings.Contains(style, "url(") {
 			return
 		}
-		style = string(modifyCSS(base, []byte(style)))
+		style = string(modifyCSS(cid2loc, files, base, []byte(style)))
 		sel.SetText(style)
 	})
 	d.Find("[style]").Each(func(_ int, sel *goquery.Selection) {
@@ -193,7 +189,7 @@ func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
 		if !strings.Contains(style, "url(") {
 			return
 		}
-		style = string(modifyCSS(base, []byte(style)))
+		style = string(modifyCSS(cid2loc, files, base, []byte(style)))
 		sel.SetAttr("style", style)
 	})
 
@@ -204,35 +200,10 @@ func modifyHTML(base *url.URL, data []byte, converted bool) ([]byte, error) {
 	return []byte(html), nil
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	url := strings.TrimPrefix(r.URL.Path, "/")
-	f, ok := files[url]
-	if !ok {
-		found := false
-		lower := strings.ToLower(url)
-		for k, f2 := range files {
-			if strings.ToLower(k) == lower {
-				found = true
-				f = f2
-				break
-			}
-		}
-		if !found {
-			http.NotFound(w, r)
-
-			//fmt.Fprintf(os.Stderr, "DEBUG: Not found: %s ", url)
-			return
-		}
-	}
-
-	w.Header().Add("Content-Type", f.contentType)
-	w.Header().Add("Content-Length", fmt.Sprint(len(f.data)))
-	w.Write(f.data)
-
-	//fmt.println(os.Stderr, "DEBUG GET: ", url, " Content-Type: ", f.contentType, "Content-Length: ", len(f.data))
-}
-
 func ConvertMht2HTML(path string, raw string) (string, error) {
+	files := make(map[string]*file)
+	cid2loc := make(map[string]string)
+
 	var r io.Reader
 	if path != "" {
 		f, err := os.Open(path)
@@ -331,7 +302,7 @@ func ConvertMht2HTML(path string, raw string) (string, error) {
 
 	for _, f := range files {
 		if ct := f.contentType; ct == "text/css" {
-			f.data = modifyCSS(f.base, f.data)
+			f.data = modifyCSS(cid2loc, files, f.base, f.data)
 		}
 	}
 	for _, f := range files {
@@ -348,7 +319,7 @@ func ConvertMht2HTML(path string, raw string) (string, error) {
 				}
 				f.converted = true
 			}
-			f.data, err = modifyHTML(f.base, f.data, f.converted)
+			f.data, err = modifyHTML(cid2loc, files, f.base, f.data, f.converted)
 			if err != nil {
 				return "", err
 			}
