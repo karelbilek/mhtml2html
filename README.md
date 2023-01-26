@@ -21,7 +21,7 @@ Convert MHTM file to a single HTML embedded all resources with base64 encoding, 
 ## Install
 
 ``` BASH
-go get -u github.com/dingqiangliu/mhtml2html
+go get -u github.com/karelbilek/mhtml2html
 ```
 
 ## Usage
